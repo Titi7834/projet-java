@@ -37,6 +37,7 @@ pipeline {
     environment {
         IMAGE = 'titi3478/webapp'
         TAG   = "${env.BUILD_NUMBER}"
+        TRIVY_EXIT_CODE = '1'
     }
 
     stages {
@@ -65,9 +66,15 @@ pipeline {
             }
         }
 
-        //   3. Ancien pipeline "webapp"
-        stage('Webapp') {
-            stages {
+        // Ignoré si le dernier commit vient de Jenkins (mise à jour du tag dans k8s/) : évite une boucle infinie
+        stage('CI/CD') {
+            when {
+                not {
+                    expression {
+                        return sh(script: 'git log -1 --pretty=%B', returnStdout: true).contains('[skip ci]')
+                    }
+                }
+            }
                 stage('Build WAR') {
                     steps {
                         sh 'mvn clean package'
@@ -78,7 +85,21 @@ pipeline {
                         sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
                     }
                 }
-                stage('Push image') {
+                // Analyse de l'image avec Trivy avant de la publier
+                stage('Scan Trivy') {
+                    steps {
+                        sh '''
+                            docker run --rm \
+                                -v /var/run/docker.sock:/var/run/docker.sock \
+                                -v trivy-cache:/root/.cache/ \
+                                aquasec/trivy:latest image \
+                                --severity HIGH,CRITICAL \
+                                --exit-code $TRIVY_EXIT_CODE \
+                                $IMAGE:$TAG
+                        '''
+                    }
+                }
+                 stage('Push image') {
                     steps {
                         withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
                                 usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -95,11 +116,31 @@ pipeline {
                         sh '''
                             docker rm -f webapp || true
                             docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
-                            docker image prune -f
                         '''
                     }
                 }
+
+                // Remplace l'ancien stage Deploy : Argo CD synchronise ensuite K3s depuis le dossier k8s/
+                stage('Mise à jour des manifests') {
+                    steps {
+                        sh '''
+                            sed -i "s|image: titi3478/webapp:.*|image: ${IMAGE}:${TAG}|" k8s/deployment.yaml
+                            git config user.email "jenkins@local"
+                            git config user.name "Jenkins"
+                            git add k8s/deployment.yaml
+                            git commit -m "k8s: webapp image ${TAG} [skip ci]" || echo "Rien à committer"
+                        '''
+                        withCredentials([usernamePassword(credentialsId: 'gitlab-push',
+                                usernameVariable: 'GL_USER', passwordVariable: 'GL_PASS')]) {
+                            sh 'git push https://${GL_USER}:${GL_PASS}@gitlab.com/Titi34/projet-java.git HEAD:main'
+                        }
+                    }
+                }
             }
+        }
+        post {
+        always {
+            sh 'docker image prune -f || true'
         }
     }
 }
