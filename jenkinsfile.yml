@@ -1,6 +1,29 @@
 pipeline {
     agent any
 
+    options {
+        // Connexion GitLab configurée dans Manage Jenkins > System (nom : Titi34)
+        gitLabConnection('Titi34')
+    }
+
+    triggers {
+        // "Construire après le build sur d'autres projets" (même si instable)
+        upstream(upstreamProjects: 'TestSonar', threshold: hudson.model.Result.UNSTABLE)
+        // "Construire lorsqu'un changement est poussé vers GitLab"
+        gitlab(
+            triggerOnPush: true,
+            triggerToBranchDeleteRequest: false,
+            triggerOnMergeRequest: true,
+            triggerOnlyIfNewCommitsPushed: false,
+            triggerOnAcceptedMergeRequest: false,
+            triggerOnClosedMergeRequest: false,
+            triggerOpenMergeRequestOnPush: 'never',
+            triggerOnApprovedMergeRequest: true,
+            triggerOnNoteRequest: true,
+            noteRegex: 'Jenkins please retry a build'
+        )
+    }
+
     tools {
         maven 'Maven-Atelier'
         jdk 'JDK Atelier'
@@ -57,6 +80,7 @@ pipeline {
                 sh '''
                     docker rm -f webapp || true
                     docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
+                    docker image prune -f
                 '''
             }
         }
