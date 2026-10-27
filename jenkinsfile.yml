@@ -102,6 +102,14 @@ pipeline {
                         }
                     }
                 }
+                stage('Deploy') {
+                    steps {
+                        sh '''
+                            docker rm -f webapp || true
+                            docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
+                        '''
+                    }
+                }
 
                 // Argo CD synchronise ensuite K3s depuis le dossier k8s/
                 stage('Mise à jour des manifests') {
