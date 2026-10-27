@@ -8,7 +8,7 @@ pipeline {
 
     triggers {
         // Vérification périodique du dépôt toutes les ~10 minutes (build uniquement s'il y a un nouveau commit)
-        cron('H/10 * * * *')
+        pollSCM('H/10 * * * *')
 
         // Déclencheurs GitLab (nécessite un webhook joignable depuis gitlab.com)
         gitlab(
