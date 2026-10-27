@@ -18,7 +18,7 @@ spec:
       containers:
         - name: webapp
           # Le tag est mis à jour automatiquement par Jenkins à chaque build
-          image: titi3478/webapp:latest
+          image: titi3478/webapp:12
           ports:
             - containerPort: 8080
           readinessProbe:
