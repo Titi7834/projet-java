@@ -1,0 +1,64 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven-Atelier'
+        jdk 'JDK Atelier'
+    }
+
+    environment {
+        IMAGE = 'titi3478/webapp'
+        TAG   = "${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://gitlab.com/Titi34/projet-java.git'
+            }
+        }
+
+        stage('Build WAR') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Analyse SonarQube') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'mvn sonar:sonar -Dsonar.projectKey=webapp'
+                }
+            }
+        }
+
+        stage('Build image') {
+            steps {
+                sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
+            }
+        }
+
+        stage('Push image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                    sh '''
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                        docker push $IMAGE:$TAG
+                        docker push $IMAGE:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                    docker rm -f webapp || true
+                    docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
+                '''
+            }
+        }
+    }
+}
