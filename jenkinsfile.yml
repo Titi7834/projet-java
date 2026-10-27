@@ -7,8 +7,8 @@ pipeline {
     }
 
     triggers {
-        // Vérification périodique du dépôt toutes les ~10 minutes (build uniquement s'il y a un nouveau commit)
-        pollSCM('H/10 * * * *')
+        // Vérification périodique du dépôt toutes les ~2 minutes (build uniquement s'il y a un nouveau commit)
+        pollSCM('H/2 * * * *')
 
         // Déclencheurs GitLab (nécessite un webhook joignable depuis gitlab.com)
         gitlab(
@@ -37,32 +37,15 @@ pipeline {
     environment {
         IMAGE = 'titi3478/webapp'
         TAG   = "${env.BUILD_NUMBER}"
+        // 1 = Trivy bloque le pipeline si des vulnérabilités HIGH/CRITICAL sont trouvées (0 = simple rapport)
         TRIVY_EXIT_CODE = '1'
     }
 
     stages {
 
-        //   1. Ancien job "Freestyle"  
-        stage('Freestyle') {
-            stages {
-                stage('Checkout') {
-                    steps {
-                        checkout scm
-                    }
-                }
-            }
-        }
-
-        //   2. Ancien pipeline "TestSonar"  
-        stage('TestSonar') {
-            stages {
-                stage('Analyse SonarQube') {
-                    steps {
-                        withSonarQubeEnv('SonarQube') {
-                            sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=webapp'
-                        }
-                    }
-                }
+        stage('Checkout') {
+            steps {
+                checkout scm
             }
         }
 
@@ -75,16 +58,23 @@ pipeline {
                     }
                 }
             }
-                stage('Build WAR') {
+            stages {
+
+                // Un seul build Maven (compilation, tests, WAR) + une seule analyse SonarQube
+                stage('Build et analyse SonarQube') {
                     steps {
-                        sh 'mvn clean package'
+                        withSonarQubeEnv('SonarQube') {
+                            sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=webapp'
+                        }
                     }
                 }
+
                 stage('Build image') {
                     steps {
                         sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
                     }
                 }
+
                 // Analyse de l'image avec Trivy avant de la publier
                 stage('Scan Trivy') {
                     steps {
@@ -99,7 +89,8 @@ pipeline {
                         '''
                     }
                 }
-                 stage('Push image') {
+
+                stage('Push image') {
                     steps {
                         withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
                                 usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
@@ -111,16 +102,8 @@ pipeline {
                         }
                     }
                 }
-                stage('Deploy') {
-                    steps {
-                        sh '''
-                            docker rm -f webapp || true
-                            docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
-                        '''
-                    }
-                }
 
-                // Remplace l'ancien stage Deploy : Argo CD synchronise ensuite K3s depuis le dossier k8s/
+                // Argo CD synchronise ensuite K3s depuis le dossier k8s/
                 stage('Mise à jour des manifests') {
                     steps {
                         sh '''
@@ -138,7 +121,9 @@ pipeline {
                 }
             }
         }
-        post {
+    }
+
+    post {
         always {
             sh 'docker image prune -f || true'
         }
