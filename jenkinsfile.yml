@@ -2,14 +2,15 @@ pipeline {
     agent any
 
     options {
-        // Connexion GitLab configurée dans Manage Jenkins > System (nom : Titi34)
         gitLabConnection('Titi34')
+        disableConcurrentBuilds()
     }
 
     triggers {
-        // "Construire après le build sur d'autres projets" (même si instable)
-        upstream(upstreamProjects: 'TestSonar', threshold: hudson.model.Result.UNSTABLE)
-        // "Construire lorsqu'un changement est poussé vers GitLab"
+        // Vérification périodique du dépôt toutes les ~10 minutes (build uniquement s'il y a un nouveau commit)
+        pollSCM('H/10 * * * *')
+
+        // Déclencheurs GitLab (nécessite un webhook joignable depuis gitlab.com)
         gitlab(
             triggerOnPush: true,
             triggerToBranchDeleteRequest: false,
@@ -20,7 +21,11 @@ pipeline {
             triggerOpenMergeRequestOnPush: 'never',
             triggerOnApprovedMergeRequest: true,
             triggerOnNoteRequest: true,
-            noteRegex: 'Jenkins please retry a build'
+            noteRegex: 'Jenkins please retry a build',
+            ciSkip: true,
+            skipWorkInProgressMergeRequest: true,
+            setBuildDescription: true,
+            branchFilterType: 'All'
         )
     }
 
@@ -35,53 +40,65 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://gitlab.com/Titi34/projet-java.git'
-            }
-        }
 
-        stage('Build WAR') {
-            steps {
-                sh 'mvn clean package'
-            }
-        }
-
-        stage('Analyse SonarQube') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh 'mvn sonar:sonar -Dsonar.projectKey=webapp'
+        //   1. Ancien job "Freestyle"  
+        stage('Freestyle') {
+            stages {
+                stage('Checkout') {
+                    steps {
+                        checkout scm
+                    }
                 }
             }
         }
 
-        stage('Build image') {
-            steps {
-                sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
-            }
-        }
-
-        stage('Push image') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-                    sh '''
-                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-                        docker push $IMAGE:$TAG
-                        docker push $IMAGE:latest
-                    '''
+        //   2. Ancien pipeline "TestSonar"  
+        stage('TestSonar') {
+            stages {
+                stage('Analyse SonarQube') {
+                    steps {
+                        withSonarQubeEnv('SonarQube') {
+                            sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=webapp'
+                        }
+                    }
                 }
             }
         }
 
-        stage('Deploy') {
-            steps {
-                sh '''
-                    docker rm -f webapp || true
-                    docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
-                    docker image prune -f
-                '''
+        //   3. Ancien pipeline "webapp"
+        stage('Webapp') {
+            stages {
+                stage('Build WAR') {
+                    steps {
+                        sh 'mvn clean package'
+                    }
+                }
+                stage('Build image') {
+                    steps {
+                        sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest .'
+                    }
+                }
+                stage('Push image') {
+                    steps {
+                        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
+                                usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                            sh '''
+                                echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                                docker push $IMAGE:$TAG
+                                docker push $IMAGE:latest
+                            '''
+                        }
+                    }
+                }
+                stage('Deploy') {
+                    steps {
+                        sh '''
+                            docker rm -f webapp || true
+                            docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
+                            docker image prune -f
+                        '''
+                    }
+                }
             }
         }
     }
