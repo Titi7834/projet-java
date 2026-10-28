@@ -1,0 +1,143 @@
+# Pipeline GitLab CI exécuté sur un runner local (Docker) : même déroulé que le Jenkinsfile
+# build Maven + tests, analyse SonarQube, build image, scan Trivy, push Docker Hub,
+# déploiement Docker local, mise à jour des manifests (Argo CD / K3s)
+
+workflow:
+  rules:
+    # Pipeline de merge request, ou pipeline de branche s'il n'y a pas de MR ouverte (évite les doublons)
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+# Tous les jobs tournent sur le runner installé sur le PC (tag "local")
+default:
+  tags:
+    - local
+
+stages:
+  - build
+  - analyse
+  - package
+  - scan
+  - publish
+  - deploy
+
+variables:
+  IMAGE: titi3478/webapp
+  TAG: $CI_COMMIT_SHORT_SHA
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  # 1 = Trivy bloque le pipeline si des vulnérabilités HIGH/CRITICAL sont trouvées (0 = simple rapport)
+  TRIVY_EXIT_CODE: "1"
+
+# Les étapes qui analysent, publient ou déploient ne tournent que sur la branche main
+.main_only:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# 1. Compilation, tests et création du WAR (webapp/target/webapp.war)
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-11
+  script:
+    - mvn clean verify
+  cache:
+    key: maven
+    paths:
+      - .m2/repository
+  artifacts:
+    paths:
+      - "**/target/"
+    reports:
+      junit: "**/target/surefire-reports/TEST-*.xml"
+    expire_in: 1 hour
+
+# 2. Analyse SonarQube (variables SONAR_HOST_URL et SONAR_TOKEN à définir dans GitLab)
+sonar:
+  stage: analyse
+  extends: .main_only
+  image: maven:3.9-eclipse-temurin-11
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - mvn sonar:sonar -Dsonar.projectKey=webapp
+  cache:
+    key: maven
+    paths:
+      - .m2/repository
+    policy: pull
+
+# 3. Construction de l'image avec le Docker de la machine (même démon pour tous les jobs)
+build_image:
+  stage: package
+  extends: .main_only
+  image: docker:27
+  script:
+    - docker build -t $IMAGE:$TAG -t $IMAGE:latest .
+
+# 4. Scan Trivy de l'image avant sa publication
+scan_trivy:
+  stage: scan
+  extends: .main_only
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  dependencies: []
+  cache:
+    key: trivy-db
+    paths:
+      - .trivycache/
+  script:
+    - trivy image --cache-dir .trivycache/ --severity HIGH,CRITICAL --exit-code $TRIVY_EXIT_CODE $IMAGE:$TAG
+
+# 5. Envoi sur Docker Hub (tag du commit + latest), uniquement si le scan est passé
+push_image:
+  stage: publish
+  extends: .main_only
+  image: docker:27
+  dependencies: []
+  script:
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+    - docker push $IMAGE:$TAG
+    - docker push $IMAGE:latest
+
+# 6a. Déploiement du conteneur Docker sur la machine (http://localhost:8081)
+deploy_docker:
+  stage: deploy
+  extends: .main_only
+  image: docker:27
+  dependencies: []
+  resource_group: deploy-docker
+  script:
+    - docker rm -f webapp || true
+    - docker run -d --name webapp -p 8081:8080 $IMAGE:$TAG
+
+# 6b. Met à jour le tag de l'image dans k8s/deployment.yaml : Argo CD synchronise ensuite K3s.
+# Le message contient [skip ci] pour ne pas relancer de pipeline.
+update_manifests:
+  stage: deploy
+  extends: .main_only
+  image: alpine:3.20
+  dependencies: []
+  resource_group: manifests
+  script:
+    - apk add --no-cache git
+    - git config user.email "gitlab-ci@local"
+    - git config user.name "GitLab CI"
+    - git fetch origin main
+    - git checkout -B main FETCH_HEAD
+    - 'sed -i "s|image: titi3478/webapp:.*|image: ${IMAGE}:${TAG}|" k8s/deployment.yaml'
+    - git add k8s/deployment.yaml
+    - 'git commit -m "k8s: webapp image ${TAG} [skip ci]" || echo "Rien à committer"'
+    - 'git push "https://oauth2:${GIT_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" HEAD:main'
+
+# Nettoyage des images Docker inutilisées, même si le pipeline a échoué (équivalent du bloc post de Jenkins)
+cleanup:
+  stage: .post
+  image: docker:27
+  dependencies: []
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: always
+  script:
+    - docker image prune -f || true
