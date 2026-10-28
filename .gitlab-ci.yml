@@ -56,8 +56,8 @@ build:
 sonar:
   stage: analyse
   extends: .main_only
-  # Le scanner SonarQube récent demande Java 17 (le code reste compilé en Java 11 par le pom.xml)
-  image: maven:3.9-eclipse-temurin-17
+  # Le scanner de ce SonarQube (13.x) demande Java 21 minimum (le code reste compilé en Java 11 par le pom.xml)
+  image: maven:3.9-eclipse-temurin-21
   variables:
     GIT_DEPTH: "0"
   script:
