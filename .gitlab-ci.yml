@@ -56,11 +56,12 @@ build:
 sonar:
   stage: analyse
   extends: .main_only
-  image: maven:3.9-eclipse-temurin-11
+  # Le scanner SonarQube récent demande Java 17 (le code reste compilé en Java 11 par le pom.xml)
+  image: maven:3.9-eclipse-temurin-17
   variables:
     GIT_DEPTH: "0"
   script:
-    - mvn sonar:sonar -Dsonar.projectKey=webapp
+    - mvn verify -DskipTests sonar:sonar -Dsonar.projectKey=webapp
   cache:
     key: maven
     paths:
