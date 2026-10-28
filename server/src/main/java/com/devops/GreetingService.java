@@ -11,6 +11,6 @@ public class GreetingService {
     }
 
     public String getPipelineSteps() {
-        return "Git → Jenkins → Maven → Docker Build → Docker Deploy";
+        return "Git → Jenkins → Maven → Docker Build → Docker Deploy → Enjoy !";
     }
 }
